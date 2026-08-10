@@ -12,6 +12,7 @@ data class SystemMetrics(
     val tempCelsius: Float = 0f,
     val batteryPercent: Int = -1,
     val perCpuLoads: List<Float> = emptyList(),
+    val loadAvg: Float = 0f,
 ) {
     /** 采集完全失败时用于兜底显示 */
     val failed: Boolean

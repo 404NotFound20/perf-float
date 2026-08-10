@@ -20,13 +20,18 @@ class MetricsReader(context: Context) {
 
     private var prevSnapshot: CpuSnapshot? = runCatching { readSnapshot() }.getOrNull()
 
+    /** 最近一次采集失败的根因，供界面诊断展示。 */
+    @Volatile
+    var lastError: String? = null
+        private set
+
     private data class CpuSnapshot(
         val total: ProcParser.CpuTimes,
         val perCore: List<ProcParser.CpuTimes>,
     )
 
     fun read(): SystemMetrics {
-        val snapshot = runCatching { readSnapshot() }.getOrNull()
+        val snapshot = readSnapshot()
         var cpuLoad = 0f
         var perCoreLoads: List<Float> = emptyList()
         if (snapshot != null) {
@@ -51,15 +56,20 @@ class MetricsReader(context: Context) {
             tempCelsius = readTemperature(),
             batteryPercent = readBattery(),
             perCpuLoads = perCoreLoads,
+            loadAvg = readLoadAvg(),
         )
     }
 
     private fun readSnapshot(): CpuSnapshot? {
-        val content = runCatching { File("/proc/stat").readText() }.getOrNull() ?: return null
-        val totalLine = content.lines().firstOrNull { it.trim().startsWith("cpu ") } ?: return null
-        val total = ProcParser.parseCpuTimes(totalLine) ?: return null
-        val perCore = ProcParser.parsePerCoreCpuTimes(content)
-        return CpuSnapshot(total, perCore)
+        return runCatching {
+            val lines = File("/proc/stat").readLines()
+            val totalLine = lines.firstOrNull { it.startsWith("cpu ") }
+                ?: error("/proc/stat 中没有 cpu 总行")
+            val total = ProcParser.parseCpuTimes(totalLine)
+                ?: error("cpu 行格式异常: $totalLine")
+            val perCore = ProcParser.parsePerCoreCpuTimes(lines.joinToString("\n"))
+            CpuSnapshot(total, perCore)
+        }.onFailure { lastError = "CPU 读取失败: ${it.message}" }.getOrNull()
     }
 
     private fun readMemory(): Triple<Float, Long, Long> {
@@ -74,14 +84,18 @@ class MetricsReader(context: Context) {
 
     /**
      * 温度读取策略：
-     * 1. BatteryManager.BATTERY_PROPERTY_TEMPERATURE（单位 0.1°C）—— 公开 API，普通应用可读
+     * 1. BatteryManager.BATTERY_PROPERTY_TEMPERATURE（属性 id=4）
+     *    - 官方定义单位为十分之一摄氏度（如 350 = 35.0°C）
+     *    - 部分厂商（实测 OPPO）直接返回整数摄氏度（如 50 = 50°C）
+     *    - 用启发式：raw >= 100 视为十分之一度，否则视为摄氏度
      * 2. 兜底 sysfs thermal zone —— 部分设备普通应用无权限读取（会得到 0）
      */
     private fun readTemperature(): Float {
-        // BatteryManager.BATTERY_PROPERTY_TEMPERATURE 为 API 28+，其常量值为 4；
-        // 用字面量以兼容 minSdk 26。低于 API 28 的设备该属性返回 0，自动走兜底。
-        val batteryTemp = batteryManager?.getIntProperty(4) ?: 0
-        if (batteryTemp > 0) return batteryTemp / 10f
+        val raw = batteryManager?.getIntProperty(4) ?: 0
+        if (raw > 0) {
+            val celsius = if (raw >= 100) raw / 10f else raw.toFloat()
+            if (celsius in 1f..120f) return celsius
+        }
         return readThermalZoneTemp()
     }
 
@@ -115,5 +129,12 @@ class MetricsReader(context: Context) {
 
     private fun readBattery(): Int {
         return batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+    }
+
+    /** /proc/loadavg 的 1 分钟负载指数，作为 CPU 百分比不可用时的兜底指标。 */
+    private fun readLoadAvg(): Float {
+        return runCatching {
+            ProcParser.parseLoadAvg(File("/proc/loadavg").readText()) ?: 0f
+        }.getOrDefault(0f)
     }
 }

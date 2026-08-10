@@ -110,4 +110,10 @@ class ProcParserTest {
         assertNull(ProcParser.parseThermalTemp("-127000"))
         assertNull(ProcParser.parseThermalTemp("unknown"))
     }
+
+    @Test
+    fun parseLoadAvg_extractsOneMinuteLoad() {
+        assertEquals(0.52f, ProcParser.parseLoadAvg("0.52 0.38 0.20 1/345 1234")!!, 0.001f)
+        assertNull(ProcParser.parseLoadAvg(""))
+    }
 }

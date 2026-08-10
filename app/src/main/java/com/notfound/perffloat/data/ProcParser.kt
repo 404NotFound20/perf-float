@@ -82,4 +82,13 @@ object ProcParser {
         if (value == -127000L) return null // 无效温度哨兵值
         return milliToCelsius(value)
     }
+
+    /**
+     * 解析 /proc/loadavg，格式如 "0.52 0.38 0.20 1/345 1234"，
+     * 返回 1 分钟系统负载指数（非百分比）。
+     */
+    fun parseLoadAvg(raw: String): Float? {
+        val first = raw.trim().split(Regex("\\s+")).firstOrNull() ?: return null
+        return first.toFloatOrNull()
+    }
 }

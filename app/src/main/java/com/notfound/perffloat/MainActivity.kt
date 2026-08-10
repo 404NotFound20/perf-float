@@ -30,6 +30,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.notfound.perffloat.data.MetricsReader
 import com.notfound.perffloat.data.SystemMetrics
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -50,20 +51,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tempValue: TextView
     private lateinit var batteryValue: TextView
     private lateinit var chartView: TrendChartView
-    private lateinit var foregroundIcon: ImageView
-    private lateinit var foregroundName: TextView
+    private lateinit var recentListContainer: LinearLayout
     private lateinit var usageAuthView: View
     private val coreItems = ArrayList<CoreBarItem>()
 
     private val metricsReader by lazy { MetricsReader(applicationContext) }
     private val foregroundTracker by lazy { ForegroundAppTracker(applicationContext) }
     private val handler = Handler(Looper.getMainLooper())
-    private var lastForegroundPkg: String? = null
+    private var recentTick = 0
 
     private val refreshRunnable = object : Runnable {
         override fun run() {
             updateDashboard(metricsReader.read())
-            updateDiagnostics()
+            updateRecentApps()
             handler.postDelayed(this, REFRESH_INTERVAL_MS)
         }
     }
@@ -141,8 +141,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateDashboard(m: SystemMetrics) {
-        cpuValue.text = if (m.cpuLoadPercent > 0f) "${m.cpuLoadPercent.roundToInt()}%" else "--"
-        cpuSub.text = "整机平均负载"
+        cpuValue.text = when {
+            m.cpuLoadPercent > 0f -> "${m.cpuLoadPercent.roundToInt()}%"
+            m.loadAvg > 0f -> String.format(Locale.US, "%.1f", m.loadAvg)
+            else -> "--"
+        }
+        cpuSub.text = when {
+            m.cpuLoadPercent > 0f -> "整机平均负载"
+            m.loadAvg > 0f -> "CPU 数据不可读，显示系统 1 分钟负载指数"
+            metricsReader.lastError != null -> metricsReader.lastError
+            else -> "整机平均负载"
+        }
 
         val totalG = m.memTotalMb / 1024
         val usedG = m.memUsedMb / 1024
@@ -159,19 +168,69 @@ class MainActivity : AppCompatActivity() {
         chartView.addData(m.cpuLoadPercent, m.tempCelsius)
     }
 
-    private fun updateDiagnostics() {
+    private fun updateRecentApps() {
         if (!foregroundTracker.hasPermission()) {
             usageAuthView.visibility = View.VISIBLE
-            foregroundName.text = "未授权，无法识别当前应用"
+            recentListContainer.removeAllViews()
             return
         }
         usageAuthView.visibility = View.GONE
-        val pkg = foregroundTracker.foregroundPackage() ?: return
-        if (pkg != lastForegroundPkg) {
-            lastForegroundPkg = pkg
-            val (label, icon) = foregroundTracker.resolveApp(pkg)
-            foregroundName.text = "$label（$pkg）"
-            if (icon != null) foregroundIcon.setImageDrawable(icon)
+        if (++recentTick % RECENT_REFRESH_EVERY != 0) return
+
+        val apps = foregroundTracker.recentApps(60 * 60 * 1000L, 5)
+        recentListContainer.removeAllViews()
+        if (apps.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "最近 1 小时没有其他应用的使用记录"
+                textSize = 12f
+                setTextColor(Color.rgb(150, 150, 150))
+                setPadding(dp(4), dp(10), 0, dp(10))
+            }
+            recentListContainer.addView(empty)
+            return
+        }
+        for (app in apps) {
+            recentListContainer.addView(buildRecentRow(app))
+        }
+    }
+
+    private fun buildRecentRow(app: RecentApp): View {
+        val icon = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
+            setImageDrawable(app.icon ?: packageManager.defaultActivityIcon)
+        }
+        val name = TextView(this).apply {
+            text = app.label
+            textSize = 14f
+            setTextColor(Color.rgb(50, 50, 50))
+            setSingleLine(true)
+        }
+        val time = TextView(this).apply {
+            text = relativeTime(app.lastUsedMillis)
+            textSize = 11f
+            setTextColor(Color.rgb(150, 150, 150))
+        }
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(name)
+            addView(time)
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(6), dp(4), dp(6))
+            addView(icon)
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(10), 0))
+            addView(textCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+    }
+
+    private fun relativeTime(millis: Long): String {
+        val minutes = (System.currentTimeMillis() - millis) / 60_000
+        return when {
+            minutes < 1 -> "刚刚"
+            minutes < 60 -> "$minutes 分钟前"
+            else -> "${minutes / 60} 小时前"
         }
     }
 
@@ -182,6 +241,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "请在系统设置中搜索「使用情况访问」并授权", Toast.LENGTH_LONG).show()
         }
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun buildUi(): ViewGroup {
         val density = resources.displayMetrics.density
@@ -243,26 +304,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         // ---- 诊断面板 ----
-        val diagTitle = sectionTitle("当前前台应用")
+        val diagTitle = sectionTitle("最近运行的应用")
 
-        foregroundIcon = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
-        }
-        foregroundName = TextView(this).apply {
-            text = "读取中…"
-            textSize = 14f
-            setTextColor(Color.rgb(50, 50, 50))
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val fgRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(foregroundIcon)
-            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(10), 0))
-            addView(foregroundName, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        recentListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
         val usageAuthButton = Button(this).apply {
-            text = "去授权「使用情况访问」以识别前台应用"
+            text = "去授权「使用情况访问」以显示最近运行的应用"
             textSize = 12f
             setOnClickListener { openUsageAccessSettings() }
         }
@@ -287,7 +335,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val hint = TextView(this).apply {
-            text = "卡顿发热时：看趋势曲线何时飙高，再对照那时前台的应用——嫌疑最大的就锁定它了"
+            text = "卡顿发热时：看趋势曲线何时飙高，再对照当时在用的应用。「最近运行的应用」列出近 1 小时使用过的应用，辅助锁定嫌疑"
             textSize = 12f
             setTextColor(Color.rgb(150, 150, 150))
         }
@@ -307,7 +355,7 @@ class MainActivity : AppCompatActivity() {
             addView(coreRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(92)))
             addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(14)))
             addView(diagTitle, LinearLayout.LayoutParams(MATCH_PARENT, dp(28)))
-            addView(fgRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)))
+            addView(recentListContainer, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(usageAuthView, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(12)))
             addView(trendTitle, LinearLayout.LayoutParams(MATCH_PARENT, dp(28)))
@@ -436,5 +484,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REFRESH_INTERVAL_MS = 1000L
+        private const val RECENT_REFRESH_EVERY = 3
     }
 }

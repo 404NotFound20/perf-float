@@ -1,15 +1,21 @@
 package com.notfound.perffloat
 
-import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 
+/** 一个最近运行的应用条目 */
+data class RecentApp(
+    val packageName: String,
+    val label: String,
+    val icon: Drawable?,
+    val lastUsedMillis: Long,
+)
+
 /**
- * 识别当前前台应用。
- * 依赖「使用情况访问权限」（Usage Access），未授权时 hasPermission() 返回 false。
+ * 基于「使用情况访问权限」识别最近运行的应用。
+ * 未授权时 hasPermission() 返回 false。
  */
 class ForegroundAppTracker(private val context: Context) {
 
@@ -25,22 +31,27 @@ class ForegroundAppTracker(private val context: Context) {
         }.getOrDefault(false)
     }
 
-    /** 返回最近一次切到前台的应用包名，找不到返回 null。 */
-    fun foregroundPackage(): String? {
-        val usm = usm ?: return null
-        val end = System.currentTimeMillis()
+    /**
+     * 返回最近 [sinceMillis] 毫秒内有使用记录的应用，按最后使用时间降序，最多 [limit] 个。
+     * 排除本应用自身。
+     */
+    fun recentApps(sinceMillis: Long, limit: Int): List<RecentApp> {
+        val usm = usm ?: return emptyList()
+        val now = System.currentTimeMillis()
         return runCatching {
-            val events = usm.queryEvents(end - 60_000, end)
-            val event = UsageEvents.Event()
-            var last: String? = null
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-                if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
-                    last = event.packageName
-                }
+            val stats = usm.queryUsageStats(
+                UsageStatsManager.INTERVAL_BEST, now - sinceMillis, now)
+                ?.asSequence()
+                ?.filter { it.packageName != context.packageName && it.lastTimeUsed > now - sinceMillis }
+                ?.sortedByDescending { it.lastTimeUsed }
+                ?.take(limit)
+                ?.toList()
+                ?: return emptyList()
+            stats.map { st ->
+                val (label, icon) = resolveApp(st.packageName)
+                RecentApp(st.packageName, label, icon, st.lastTimeUsed)
             }
-            last
-        }.getOrNull()
+        }.getOrDefault(emptyList())
     }
 
     /** 解析包名对应的应用名称与图标，失败时返回包名本身。 */
