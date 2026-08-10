@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">PerfFloat 性能浮窗</string>
+    <string name="start_monitor">启动监控</string>
+    <string name="stop_monitor">停止监控</string>
+    <string name="overlay_permission_title">需要悬浮窗权限</string>
+    <string name="overlay_permission_message">授予后即可在任意界面显示性能浮窗，点击下方按钮前往授权。</string>
+    <string name="grant_overlay">去授权</string>
+    <string name="notification_title">性能监控运行中</string>
+    <string name="notification_text">浮窗正在显示 CPU / 内存 / 温度 / 电量</string>
+</resources>
