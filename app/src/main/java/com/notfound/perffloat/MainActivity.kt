@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -19,7 +20,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,9 +33,10 @@ import com.notfound.perffloat.data.SystemMetrics
 import kotlin.math.roundToInt
 
 /**
- * 主界面 = 实时监控仪表盘。
- * 打开即可直接观察 CPU / 内存 / 温度 / 电量 / 单核负载，每秒刷新；
- * 同时保留悬浮窗的启动与停止。
+ * 主界面 = 实时监控仪表盘 + 诊断面板。
+ * - 打开即可直接观察 CPU / 内存 / 温度 / 电量 / 单核负载，每秒刷新
+ * - 诊断面板：当前前台应用（判断"谁在占用"）+ CPU/温度趋势曲线（判断"何时开始飙高"）
+ * - 保留悬浮窗启动与停止
  */
 class MainActivity : AppCompatActivity() {
 
@@ -45,13 +49,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var memSub: TextView
     private lateinit var tempValue: TextView
     private lateinit var batteryValue: TextView
+    private lateinit var chartView: TrendChartView
+    private lateinit var foregroundIcon: ImageView
+    private lateinit var foregroundName: TextView
+    private lateinit var usageAuthView: View
     private val coreItems = ArrayList<CoreBarItem>()
 
     private val metricsReader by lazy { MetricsReader(applicationContext) }
+    private val foregroundTracker by lazy { ForegroundAppTracker(applicationContext) }
     private val handler = Handler(Looper.getMainLooper())
+    private var lastForegroundPkg: String? = null
+
     private val refreshRunnable = object : Runnable {
         override fun run() {
             updateDashboard(metricsReader.read())
+            updateDiagnostics()
             handler.postDelayed(this, REFRESH_INTERVAL_MS)
         }
     }
@@ -144,6 +156,31 @@ class MainActivity : AppCompatActivity() {
             val load = m.perCpuLoads.getOrNull(i)
             if (load != null) coreItems[i].setLoad(load) else coreItems[i].setLoad(-1f)
         }
+        chartView.addData(m.cpuLoadPercent, m.tempCelsius)
+    }
+
+    private fun updateDiagnostics() {
+        if (!foregroundTracker.hasPermission()) {
+            usageAuthView.visibility = View.VISIBLE
+            foregroundName.text = "未授权，无法识别当前应用"
+            return
+        }
+        usageAuthView.visibility = View.GONE
+        val pkg = foregroundTracker.foregroundPackage() ?: return
+        if (pkg != lastForegroundPkg) {
+            lastForegroundPkg = pkg
+            val (label, icon) = foregroundTracker.resolveApp(pkg)
+            foregroundName.text = "$label（$pkg）"
+            if (icon != null) foregroundIcon.setImageDrawable(icon)
+        }
+    }
+
+    private fun openUsageAccessSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+        } catch (_: Exception) {
+            Toast.makeText(this, "请在系统设置中搜索「使用情况访问」并授权", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun buildUi(): ViewGroup {
@@ -195,12 +232,7 @@ class MainActivity : AppCompatActivity() {
             addView(batteryCard, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 
-        val coreTitle = TextView(this).apply {
-            text = "单核负载"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.rgb(70, 70, 70))
-        }
+        val coreTitle = sectionTitle("单核负载")
         val coreRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             for (i in 0 until 8) {
@@ -210,30 +242,91 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val hint = TextView(this).apply {
-            text = "主界面为实时仪表盘，每秒刷新；也可启动悬浮窗在任意界面查看"
+        // ---- 诊断面板 ----
+        val diagTitle = sectionTitle("当前前台应用")
+
+        foregroundIcon = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
+        }
+        foregroundName = TextView(this).apply {
+            text = "读取中…"
+            textSize = 14f
+            setTextColor(Color.rgb(50, 50, 50))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val fgRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(foregroundIcon)
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(10), 0))
+            addView(foregroundName, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val usageAuthButton = Button(this).apply {
+            text = "去授权「使用情况访问」以识别前台应用"
             textSize = 12f
-            setTextColor(Color.rgb(150, 150, 150))
-            gravity = Gravity.CENTER
+            setOnClickListener { openUsageAccessSettings() }
+        }
+        usageAuthView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(usageAuthButton, LinearLayout.LayoutParams(MATCH_PARENT, dp(42)))
+            visibility = View.GONE
         }
 
-        val root = LinearLayout(this).apply {
+        val trendTitle = sectionTitle("负载趋势（最近 2 分钟）")
+        chartView = TrendChartView(this).apply {
+            setBackgroundColor(Color.WHITE)
+        }
+        val chartCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(36), dp(20), dp(20))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.WHITE)
+            }
+            addView(chartView, LinearLayout.LayoutParams(MATCH_PARENT, dp(112)))
+        }
+
+        val hint = TextView(this).apply {
+            text = "卡顿发热时：看趋势曲线何时飙高，再对照那时前台的应用——嫌疑最大的就锁定它了"
+            textSize = 12f
+            setTextColor(Color.rgb(150, 150, 150))
+        }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(28), dp(20), dp(20))
             background = GradientDrawable().apply { setColor(Color.rgb(245, 245, 245)) }
-            addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)))
+            addView(statusText, LinearLayout.LayoutParams(MATCH_PARENT, dp(40)))
             addView(buttonRow, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(14)))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(12)))
             addView(cardsRow1, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(10)))
             addView(cardsRow2, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(16)))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(14)))
             addView(coreTitle, LinearLayout.LayoutParams(MATCH_PARENT, dp(28)))
-            addView(coreRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(96)))
+            addView(coreRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(92)))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(14)))
+            addView(diagTitle, LinearLayout.LayoutParams(MATCH_PARENT, dp(28)))
+            addView(fgRow, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)))
+            addView(usageAuthView, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(12)))
+            addView(trendTitle, LinearLayout.LayoutParams(MATCH_PARENT, dp(28)))
+            addView(chartCard, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, dp(10)))
             addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        return root
+
+        return ScrollView(this).apply {
+            isFillViewport = true
+            addView(content)
+        }
+    }
+
+    private fun sectionTitle(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Color.rgb(70, 70, 70))
     }
 
     private fun createMetricCard(
@@ -278,7 +371,7 @@ class MainActivity : AppCompatActivity() {
 
     private inner class CoreBarItem(context: Context, index: Int) {
         private val density = resources.displayMetrics.density
-        private val barMaxHeight = (56 * density).toInt()
+        private val barMaxHeight = (52 * density).toInt()
         private val barWidth = (10 * density).toInt()
 
         private val value: TextView
