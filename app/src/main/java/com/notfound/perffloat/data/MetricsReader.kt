@@ -2,42 +2,64 @@ package com.notfound.perffloat.data
 
 import android.content.Context
 import android.os.BatteryManager
-import android.os.Build
 import java.io.File
 
 /**
  * 读取整机性能数据：
- * - CPU 负载：连续两次读取 /proc/stat 计算
+ * - CPU 负载（整机 + 每核）：连续两次读取 /proc/stat 快照计算
  * - 内存：/proc/meminfo
- * - 温度：/sys/class/thermal/ 下的 thermal_zone 系列节点
- * - 电量：BatteryManager（Android 5+ 支持 getIntProperty）
+ * - 温度：优先 BatteryManager 电池温度（普通应用可读），sysfs thermal 兜底
+ * - 电量：BatteryManager
+ *
+ * 构造时立即建立一次 CPU 基线，保证首次 read() 就能返回真实负载而非 0。
  */
-class MetricsReader(private val context: Context) {
+class MetricsReader(context: Context) {
 
-    private var prevCpu: ProcParser.CpuTimes? = null
+    private val batteryManager: BatteryManager? =
+        context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+
+    private var prevSnapshot: CpuSnapshot? = runCatching { readSnapshot() }.getOrNull()
+
+    private data class CpuSnapshot(
+        val total: ProcParser.CpuTimes,
+        val perCore: List<ProcParser.CpuTimes>,
+    )
 
     fun read(): SystemMetrics {
-        val cpu = readCpuLoad()
+        val snapshot = runCatching { readSnapshot() }.getOrNull()
+        var cpuLoad = 0f
+        var perCoreLoads: List<Float> = emptyList()
+        if (snapshot != null) {
+            val prev = prevSnapshot
+            if (prev != null) {
+                cpuLoad = ProcParser.cpuLoadPercent(prev.total, snapshot.total)
+                if (prev.perCore.size == snapshot.perCore.size && snapshot.perCore.isNotEmpty()) {
+                    perCoreLoads = snapshot.perCore.indices.map { i ->
+                        ProcParser.cpuLoadPercent(prev.perCore[i], snapshot.perCore[i])
+                    }
+                }
+            }
+            prevSnapshot = snapshot
+        }
+
         val (usedPercent, usedMb, totalMb) = readMemory()
-        val temp = readTemperature()
-        val battery = readBattery()
         return SystemMetrics(
-            cpuLoadPercent = cpu,
+            cpuLoadPercent = cpuLoad,
             memUsedPercent = usedPercent,
             memUsedMb = usedMb,
             memTotalMb = totalMb,
-            tempCelsius = temp,
-            batteryPercent = battery,
+            tempCelsius = readTemperature(),
+            batteryPercent = readBattery(),
+            perCpuLoads = perCoreLoads,
         )
     }
 
-    private fun readCpuLoad(): Float {
-        val line = readFirstLine("/proc/stat") { it.startsWith("cpu ") } ?: return 0f
-        val curr = ProcParser.parseCpuTimes(line) ?: return 0f
-        val prev = prevCpu
-        prevCpu = curr
-        if (prev == null) return 0f
-        return ProcParser.cpuLoadPercent(prev, curr)
+    private fun readSnapshot(): CpuSnapshot? {
+        val content = runCatching { File("/proc/stat").readText() }.getOrNull() ?: return null
+        val totalLine = content.lines().firstOrNull { it.trim().startsWith("cpu ") } ?: return null
+        val total = ProcParser.parseCpuTimes(totalLine) ?: return null
+        val perCore = ProcParser.parsePerCoreCpuTimes(content)
+        return CpuSnapshot(total, perCore)
     }
 
     private fun readMemory(): Triple<Float, Long, Long> {
@@ -51,9 +73,19 @@ class MetricsReader(private val context: Context) {
     }
 
     /**
-     * 遍历 thermal zones，优先取 cpu/gpu 相关传感器，取最高温度。
+     * 温度读取策略：
+     * 1. BatteryManager.BATTERY_PROPERTY_TEMPERATURE（单位 0.1°C）—— 公开 API，普通应用可读
+     * 2. 兜底 sysfs thermal zone —— 部分设备普通应用无权限读取（会得到 0）
      */
     private fun readTemperature(): Float {
+        // BatteryManager.BATTERY_PROPERTY_TEMPERATURE 为 API 28+，其常量值为 4；
+        // 用字面量以兼容 minSdk 26。低于 API 28 的设备该属性返回 0，自动走兜底。
+        val batteryTemp = batteryManager?.getIntProperty(4) ?: 0
+        if (batteryTemp > 0) return batteryTemp / 10f
+        return readThermalZoneTemp()
+    }
+
+    private fun readThermalZoneTemp(): Float {
         val base = File("/sys/class/thermal")
         if (!base.exists()) return 0f
         val zones = base.listFiles { f -> f.name.startsWith("thermal_zone") } ?: return 0f
@@ -82,14 +114,6 @@ class MetricsReader(private val context: Context) {
     }
 
     private fun readBattery(): Int {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return -1
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager ?: return -1
-        return bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-    }
-
-    private fun readFirstLine(path: String, predicate: (String) -> Boolean): String? {
-        return runCatching {
-            File(path).bufferedReader().useLines { lines -> lines.firstOrNull(predicate) }
-        }.getOrNull()
+        return batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
     }
 }

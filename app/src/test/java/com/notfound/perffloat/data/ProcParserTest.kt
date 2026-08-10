@@ -51,6 +51,37 @@ class ProcParserTest {
     }
 
     @Test
+    fun parsePerCoreCpuTimes_sortsByCoreIndex() {
+        val content = """
+            cpu  1000 200 300 4000 500 60 70 80 0 0
+            cpu0 100 20 30 400 50 0 0 0 0 0
+            cpu1 200 20 30 800 50 0 0 0 0 0
+            cpu2 300 20 30 1200 50 0 0 0 0 0
+        """.trimIndent()
+        val cores = ProcParser.parsePerCoreCpuTimes(content)
+        assertEquals(3, cores.size)
+        assertEquals(450L, cores[0].idleJiffies) // cpu0: 400 + 50
+        assertEquals(850L, cores[1].idleJiffies) // cpu1: 800 + 50
+        assertEquals(1250L, cores[2].idleJiffies)
+    }
+
+    @Test
+    fun parsePerCoreCpuTimes_ignoresTotalLine() {
+        val cores = ProcParser.parsePerCoreCpuTimes("cpu  100 200 300 400 0 0 0 0")
+        assertEquals(0, cores.size)
+    }
+
+    @Test
+    fun perCoreLoadComputedWithDelta() {
+        val prevContent = "cpu0 100 20 30 400 50 0 0 0 0 0"
+        val currContent = "cpu0 150 20 30 450 50 0 0 0 0 0"
+        val prev = ProcParser.parsePerCoreCpuTimes(prevContent)[0]
+        val curr = ProcParser.parsePerCoreCpuTimes(currContent)[0]
+        // total 增加 100（cpu0: 150-100=50，450-400=50），idle 增加 50 → busy 50/100 = 50%
+        assertEquals(50f, ProcParser.cpuLoadPercent(prev, curr), 0.01f)
+    }
+
+    @Test
     fun parseMemInfo_extractsTotalAndAvailable() {
         val content = """
             MemTotal:       8388608 kB

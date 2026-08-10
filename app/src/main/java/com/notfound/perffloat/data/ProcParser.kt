@@ -33,6 +33,27 @@ object ProcParser {
     }
 
     /**
+     * 解析 /proc/stat 全部内容，返回每核（cpu0..cpuN）的时间片快照，按核心号升序。
+     * 与 parseCpuTimes 不同，这里只处理形如 "cpuN ..." 的独立核心行。
+     */
+    fun parsePerCoreCpuTimes(content: String): List<CpuTimes> {
+        val result = ArrayList<CpuTimes>()
+        for (line in content.lines()) {
+            val t = line.trim()
+            if (!t.startsWith("cpu")) continue
+            if (t.length >= 4 && t[3] != ' ' && !t[3].isDigit()) continue
+            val digitPart = t.substring(3).takeWhile { it.isDigit() }
+            if (digitPart.isEmpty()) continue
+            val nums = t.split(Regex("\\s+")).drop(1).mapNotNull { it.toLongOrNull() }
+            if (nums.size < 8) continue
+            val idle = nums[3] + nums[4]
+            val total = nums.take(8).sum()
+            result.add(CpuTimes(total, idle))
+        }
+        return result
+    }
+
+    /**
      * 解析 /proc/meminfo，返回 Pair(totalKB, availableKB)。
      * 单位统一为 kB（/proc/meminfo 原生单位）。
      */
