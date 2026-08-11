@@ -34,7 +34,7 @@ class TrendChartView @JvmOverloads constructor(
     fun addData(cpu: Float, temp: Float) {
         if (cpuHistory.size >= maxPoints) cpuHistory.removeFirst()
         if (tempHistory.size >= maxPoints) tempHistory.removeFirst()
-        cpuHistory.addLast(cpu.coerceIn(0f, 100f))
+        cpuHistory.addLast(if (cpu.isNaN()) Float.NaN else cpu.coerceIn(0f, 100f))
         tempHistory.addLast(if (temp > 0f) temp else Float.NaN)
         invalidate()
     }
@@ -77,13 +77,18 @@ class TrendChartView @JvmOverloads constructor(
         var tempStarted = false
         for (i in 0 until n) {
             val x = padL + chartW * i / (maxPoints - 1).toFloat()
+
             val cpuV = cpuHistory[i]
-            val cpuY = padT + chartH * (1f - cpuV / 100f)
-            if (!cpuStarted) {
-                cpuPath.moveTo(x, cpuY)
-                cpuStarted = true
+            if (!cpuV.isNaN()) {
+                val cpuY = padT + chartH * (1f - cpuV / 100f)
+                if (!cpuStarted) {
+                    cpuPath.moveTo(x, cpuY)
+                    cpuStarted = true
+                } else {
+                    cpuPath.lineTo(x, cpuY)
+                }
             } else {
-                cpuPath.lineTo(x, cpuY)
+                cpuStarted = false
             }
 
             val tempV = tempHistory[i]
@@ -105,7 +110,9 @@ class TrendChartView @JvmOverloads constructor(
 
         // 最新值角标
         val lastCpu = cpuHistory.last()
-        canvas.drawText("${lastCpu.roundToInt()}%", padL, padT + chartH - 4f, axisPaint)
+        if (!lastCpu.isNaN()) {
+            canvas.drawText("${lastCpu.roundToInt()}%", padL, padT + chartH - 4f, axisPaint)
+        }
         val lastTemp = tempHistory.last()
         if (!lastTemp.isNaN()) {
             canvas.drawText(

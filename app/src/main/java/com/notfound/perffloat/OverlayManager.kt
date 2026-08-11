@@ -14,6 +14,7 @@ import android.view.WindowManager
 import android.widget.TextView
 import com.notfound.perffloat.data.SystemMetrics
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 悬浮窗管理：创建/更新/移除顶层监控药丸，支持拖动。
@@ -78,13 +79,18 @@ class OverlayManager(private val context: Context) {
 
     fun update(metrics: SystemMetrics) {
         val view = overlayView ?: return
+        val cpuText = when {
+            metrics.cpuLoadPercent > 0f -> "CPU ${metrics.cpuLoadPercent.roundToInt()}%"
+            metrics.loadAvg > 0f -> "LD " + String.format(Locale.US, "%.1f", metrics.loadAvg)
+            else -> "CPU --"
+        }
         val text = if (metrics.failed) {
             "数据不可用"
         } else {
             String.format(
                 Locale.US,
-                "CPU %.0f%%  MEM %d/%dG  %.0f°C  %d%%",
-                metrics.cpuLoadPercent,
+                "%s  MEM %d/%dG  %.0f°C  %d%%",
+                cpuText,
                 metrics.memUsedMb / 1024,
                 (metrics.memTotalMb + 1023) / 1024,
                 metrics.tempCelsius,

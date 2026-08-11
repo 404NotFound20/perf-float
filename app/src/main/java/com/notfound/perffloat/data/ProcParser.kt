@@ -91,4 +91,17 @@ object ProcParser {
         val first = raw.trim().split(Regex("\\s+")).firstOrNull() ?: return null
         return first.toFloatOrNull()
     }
+
+    /**
+     * 解析 /proc/uptime，格式如 "12345.67 89012.34"：
+     * 第一个值为系统总运行秒数，第二个值为所有核心累计空闲秒数。
+     * 返回 Pair(uptimeSeconds, idleSeconds)，失败返回 null。
+     */
+    fun parseUptime(raw: String): Pair<Double, Double>? {
+        val parts = raw.trim().split(Regex("\\s+"))
+        if (parts.size < 2) return null
+        val uptime = parts[0].toDoubleOrNull() ?: return null
+        val idle = parts[1].toDoubleOrNull() ?: return null
+        return uptime to idle
+    }
 }

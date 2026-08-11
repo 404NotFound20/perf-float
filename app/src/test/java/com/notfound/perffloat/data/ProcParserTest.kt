@@ -116,4 +116,18 @@ class ProcParserTest {
         assertEquals(0.52f, ProcParser.parseLoadAvg("0.52 0.38 0.20 1/345 1234")!!, 0.001f)
         assertNull(ProcParser.parseLoadAvg(""))
     }
+
+    @Test
+    fun parseUptime_extractsUptimeAndIdle() {
+        val (uptime, idle) = ProcParser.parseUptime("12345.67 89012.34")!!
+        assertEquals(12345.67, uptime, 0.001)
+        assertEquals(89012.34, idle, 0.001)
+    }
+
+    @Test
+    fun parseUptime_returnsNullOnMalformed() {
+        assertNull(ProcParser.parseUptime(""))
+        assertNull(ProcParser.parseUptime("12345.67"))
+        assertNull(ProcParser.parseUptime("abc 123"))
+    }
 }

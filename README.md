@@ -5,11 +5,14 @@ Android 悬浮窗性能监控工具：以可拖动的顶层浮窗显示 CPU 负�
 ## 功能
 
 - 常驻悬浮窗（`TYPE_APPLICATION_OVERLAY`），可拖动、可随时启停
-- CPU 负载：读取 `/proc/stat` 两次采样计算
-- 内存：读取 `/proc/meminfo`（总/已用）
-- 温度：遍历 `/sys/class/thermal/thermal_zone*`，优先 CPU/GPU 传感器
-- 电量：`BatteryManager` 实时容量
+- CPU 负载：优先 `/proc/stat` 两次采样计算；系统限制读取时自动降级为 `/proc/uptime` 估算、再降级为 `/proc/loadavg` 负载指数
+- 内存：读取 `/proc/meminfo`（总/已用），受限时用 `ActivityManager.MemoryInfo` 兜底
+- 温度：系统粘性广播 `ACTION_BATTERY_CHANGED` 的 `EXTRA_TEMPERATURE`（0.1°C），`/sys/class/thermal` 兜底
+- 电量：系统粘性广播的 level/scale，`BatteryManager` 属性兜底
 - 前台服务保活 + 每秒刷新，退出 App 后浮窗仍常驻
+
+> 注意：Android 7+ 的 SELinux 策略禁止普通应用（无 root）读取 `/proc/stat`，
+> 这是平台限制而非程序错误，App 会自动降级到 `/proc/uptime` 估算或负载指数。
 
 ## 构建
 

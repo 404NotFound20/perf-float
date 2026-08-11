@@ -28,6 +28,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.notfound.perffloat.data.CpuSource
 import com.notfound.perffloat.data.MetricsReader
 import com.notfound.perffloat.data.SystemMetrics
 import java.util.Locale
@@ -147,10 +148,11 @@ class MainActivity : AppCompatActivity() {
             else -> "--"
         }
         cpuSub.text = when {
-            m.cpuLoadPercent > 0f -> "整机平均负载"
-            m.loadAvg > 0f -> "CPU 数据不可读，显示系统 1 分钟负载指数"
+            m.cpuSource == CpuSource.STAT -> "整机平均负载"
+            m.cpuSource == CpuSource.UPTIME -> "/proc/stat 受限，按 /proc/uptime 估算"
+            m.cpuSource == CpuSource.LOAD_AVG -> "/proc/stat 受限，显示 1 分钟负载指数"
             metricsReader.lastError != null -> metricsReader.lastError
-            else -> "整机平均负载"
+            else -> "CPU 数据不可用"
         }
 
         val totalG = m.memTotalMb / 1024
@@ -165,7 +167,10 @@ class MainActivity : AppCompatActivity() {
             val load = m.perCpuLoads.getOrNull(i)
             if (load != null) coreItems[i].setLoad(load) else coreItems[i].setLoad(-1f)
         }
-        chartView.addData(m.cpuLoadPercent, m.tempCelsius)
+        chartView.addData(
+            if (m.cpuLoadPercent > 0f) m.cpuLoadPercent else Float.NaN,
+            m.tempCelsius,
+        )
     }
 
     private fun updateRecentApps() {
